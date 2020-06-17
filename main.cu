@@ -160,7 +160,7 @@ unsigned int clamp(int p)
 int main() {
 	int nx = 1200;
 	int ny = 800;
-	int ns = 1 << 7;
+	int ns = 1 << 5;
 	int tx = BLOCKSIZE;
 	int ty = BLOCKSIZE;
 
