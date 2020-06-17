@@ -1,4 +1,5 @@
 #include <iostream>
+#include <algorithm> 
 #include <time.h>
 #include <float.h>
 #include <curand_kernel.h>
@@ -14,6 +15,9 @@
 #include <D:/EE817_gpu programming/playground/stb/stb_image_write.h>
 
 using namespace std;
+
+#define NSTREAM 4
+#define BLOCKSIZE 16
 
 // limited version of checkCudaErrors from helper_cuda.h in CUDA examples
 #define checkCudaErrors(val) check_cuda( (val), #val, __FILE__, __LINE__ )
@@ -64,25 +68,25 @@ __global__ void rand_init(curandState *rand_state) {
 	}
 }
 
-__global__ void render_init(int max_x, int max_y, curandState *rand_state) {
+__global__ void render_init(int max_x, int max_y, int offset, curandState *rand_state) {
 	int i = threadIdx.x + blockIdx.x * blockDim.x;
 	int j = threadIdx.y + blockIdx.y * blockDim.y;
-	if ((i >= max_x) || (j >= max_y)) return;
+	if ((i >= max_x) || (j + offset >= max_y)) return;
 	int pixel_index = j*max_x + i;
 	//Each thread gets same seed, a different sequence number, no offset
-	curand_init(1984, pixel_index, 0, &rand_state[pixel_index]);
+	curand_init(1984, pixel_index + offset * max_x, 0, &rand_state[pixel_index]);
 }
 
-__global__ void render(vec3 *fb, int max_x, int max_y, int ns, camera **cam, hitable **world, curandState *rand_state) {
+__global__ void render(vec3 *fb, int max_x, int max_y, int offset, int ns, camera **cam, hitable **world, curandState *rand_state) {
 	int i = threadIdx.x + blockIdx.x * blockDim.x;
 	int j = threadIdx.y + blockIdx.y * blockDim.y;
-	if ((i >= max_x) || (j >= max_y)) return;
+	if ((i >= max_x) || (j + offset >= max_y)) return;
 	int pixel_index = j*max_x + i;
 	curandState local_rand_state = rand_state[pixel_index];
 	vec3 col(0, 0, 0);
 	for (int s = 0; s < ns; s++) {
 		float u = float(i + curand_uniform(&local_rand_state)) / float(max_x);
-		float v = float(j + curand_uniform(&local_rand_state)) / float(max_y);
+		float v = float(j + offset + curand_uniform(&local_rand_state)) / float(max_y);
 		ray r = (*cam)->get_ray(u, v, &local_rand_state);
 		col += color(r, world, &local_rand_state);
 	}
@@ -156,9 +160,9 @@ unsigned int clamp(int p)
 int main() {
 	int nx = 1200;
 	int ny = 800;
-	int ns = 1 << 5;
-	int tx = 8;
-	int ty = 8;
+	int ns = 1 << 7;
+	int tx = BLOCKSIZE;
+	int ty = BLOCKSIZE;
 
 	std::cerr << "Rendering a " << nx << "x" << ny << " image with " << ns << " samples per pixel ";
 	std::cerr << "in " << tx << "x" << ty << " blocks.\n";
@@ -166,18 +170,22 @@ int main() {
 	int num_pixels = nx*ny;
 	size_t fb_size = num_pixels*sizeof(vec3);
 
-	// allocate FB
-	vec3 *fb;
-	checkCudaErrors(cudaMallocManaged((void **)&fb, fb_size));
+	// allocate an image buffer
+	vec3 *h_buffer, *d_buffer;
+	checkCudaErrors(cudaHostAlloc((void **)&h_buffer, fb_size, cudaHostAllocDefault));
+	checkCudaErrors(cudaMalloc((void **)&d_buffer, fb_size));
+	memset(h_buffer, 0, fb_size);
+	//vec3 *fb;
+	//checkCudaErrors(cudaMallocManaged((void **)&fb, fb_size));
 
 	// allocate random state
 	curandState *d_rand_state;
 	checkCudaErrors(cudaMalloc((void **)&d_rand_state, num_pixels*sizeof(curandState)));
-	curandState *d_rand_state2;
-	checkCudaErrors(cudaMalloc((void **)&d_rand_state2, 1 * sizeof(curandState)));
+	curandState *d_rand_state_w;
+	checkCudaErrors(cudaMalloc((void **)&d_rand_state_w, 1 * sizeof(curandState)));
 
 	// we need that 2nd random state to be initialized for the world creation
-	rand_init << <1, 1 >> >(d_rand_state2);
+	rand_init << <1, 1 >> >(d_rand_state_w);
 	checkCudaErrors(cudaGetLastError());
 	checkCudaErrors(cudaDeviceSynchronize());
 
@@ -189,40 +197,57 @@ int main() {
 	checkCudaErrors(cudaMalloc((void **)&d_world, sizeof(hitable *)));
 	camera **d_camera;
 	checkCudaErrors(cudaMalloc((void **)&d_camera, sizeof(camera *)));
-	create_world << <1, 1 >> >(d_list, d_world, d_camera, nx, ny, d_rand_state2);
+	create_world << <1, 1 >> >(d_list, d_world, d_camera, nx, ny, d_rand_state_w);
 	checkCudaErrors(cudaGetLastError());
 	checkCudaErrors(cudaDeviceSynchronize());
 
-	cudaProfilerStart();
-	clock_t start, stop;
-	start = clock();
 	// Render our buffer
-	dim3 blocks(nx / tx + 1, ny / ty + 1);
-	dim3 threads(tx, ty);
-	render_init << <blocks, threads >> >(nx, ny, d_rand_state);
-	checkCudaErrors(cudaGetLastError());
-	checkCudaErrors(cudaDeviceSynchronize());
-	render << <blocks, threads >> >(fb, nx, ny, ns, d_camera, d_world, d_rand_state);
-	checkCudaErrors(cudaGetLastError());
-	checkCudaErrors(cudaDeviceSynchronize());
-	stop = clock();
-	double timer_seconds = ((double)(stop - start)) / CLOCKS_PER_SEC;
-	std::cerr << "gpu took " << timer_seconds << " seconds.\n";
+	int iElem = (ny + NSTREAM - 1) / NSTREAM;
+	dim3 grid((nx + tx - 1) / tx, (iElem + ty - 1) / ty);
+	dim3 block(tx, ty);
+
+	cudaStream_t *streams = (cudaStream_t *)malloc(NSTREAM * sizeof(cudaStream_t));
+	for (int i = 0; i < NSTREAM; i++)
+	{
+		checkCudaErrors(cudaStreamCreate(&(streams[i])));
+	}
+
+	cudaProfilerStart();
+	cudaEvent_t start, stop;
+	checkCudaErrors(cudaEventCreate(&start));
+	checkCudaErrors(cudaEventCreate(&stop));
+
+	checkCudaErrors(cudaEventRecord(start, 0));
+
+	for (int i = 0; i < NSTREAM; i++)
+	{
+		int iOffset = i * iElem;
+		render_init << <grid, block, 0, streams[i] >> >(nx, ny, iOffset, &d_rand_state[iOffset * nx]);
+		//checkCudaErrors(cudaMemcpyAsync(&d_buffer[iOffset * nx], &h_buffer[iOffset * nx], min(iElem, ny - iOffset) * nx * sizeof(vec3), cudaMemcpyHostToDevice, streams[i]));
+		render << <grid, block, 0, streams[i] >> >(&d_buffer[iOffset * nx], nx, ny, iOffset, ns, d_camera, d_world, &d_rand_state[iOffset * nx]);
+		checkCudaErrors(cudaMemcpyAsync(&h_buffer[iOffset * nx], &d_buffer[iOffset * nx], min(iElem, ny - iOffset) * nx * sizeof(vec3), cudaMemcpyDeviceToHost, streams[i]));
+	}
+
+	checkCudaErrors(cudaEventRecord(stop, 0));
+	checkCudaErrors(cudaEventSynchronize(stop));
+	float timer_seconds;
+	checkCudaErrors(cudaEventElapsedTime(&timer_seconds, start, stop));
+
+	std::cerr << "gpu took " << timer_seconds / 1000 << " seconds.\n";
 	cudaProfilerStop();
 
 	// Output FB as Image
 	std::vector<unsigned char> pix(nx * ny * 3);
-	std::cout << "P3\n" << nx << " " << ny << "\n255\n";
 	for (int j = ny - 1; j >= 0; --j) {
 		unsigned char *dst = &pix[0] + (3 * nx*(ny - j - 1));
 		for (int i = 0; i < nx; i++) {
 			size_t pixel_index = j*nx + i;
 
-			int ir = int(255.99*fb[pixel_index].r());
+			int ir = int(255.99*h_buffer[pixel_index].r());
 			*dst++ = static_cast<unsigned char>(clamp(ir));
-			int ig = int(255.99*fb[pixel_index].g());
+			int ig = int(255.99*h_buffer[pixel_index].g());
 			*dst++ = static_cast<unsigned char>(clamp(ig));
-			int ib = int(255.99*fb[pixel_index].b());
+			int ib = int(255.99*h_buffer[pixel_index].b());
 			*dst++ = static_cast<unsigned char>(clamp(ib));
 		}
 	}
@@ -251,7 +276,7 @@ int main() {
 	checkCudaErrors(cudaFree(d_world));
 	checkCudaErrors(cudaFree(d_list));
 	checkCudaErrors(cudaFree(d_rand_state));
-	checkCudaErrors(cudaFree(fb));
+	checkCudaErrors(cudaFree(d_buffer));
 
 	cudaDeviceReset();
 }
