@@ -12,7 +12,7 @@
 #include "device_launch_parameters.h"
 #include <vector>
 #include <cuda_profiler_api.h>
-#include <D:/EE817_gpu programming/playground/stb/stb_image_write.h>
+#include <D:/EE817/cuPT/stb_image_write.h>
 
 using namespace std;
 
