@@ -84,10 +84,47 @@ __global__ void render(vec3 *fb, int max_x, int max_y, int offset, int ns, camer
 	int pixel_index = j*max_x + i;
 	curandState local_rand_state = rand_state[pixel_index];
 	vec3 col(0, 0, 0);
-	for (int s = 0; s < ns; s++) {
-		float u = float(i + curand_uniform(&local_rand_state)) / float(max_x);
-		float v = float(j + offset + curand_uniform(&local_rand_state)) / float(max_y);
-		ray r = (*cam)->get_ray(u, v, &local_rand_state);
+	float u, v;
+	ray r;
+	for (int s = 0; s < ns / 8; s++) {
+		u = float(i + curand_uniform(&local_rand_state)) / float(max_x);
+		v = float(j + offset + curand_uniform(&local_rand_state)) / float(max_y);
+		r = (*cam)->get_ray(u, v, &local_rand_state);
+		col += color(r, world, &local_rand_state);
+
+		u = float(i + curand_uniform(&local_rand_state)) / float(max_x);
+		v = float(j + offset + curand_uniform(&local_rand_state)) / float(max_y);
+		r = (*cam)->get_ray(u, v, &local_rand_state);
+		col += color(r, world, &local_rand_state);
+
+		u = float(i + curand_uniform(&local_rand_state)) / float(max_x);
+		v = float(j + offset + curand_uniform(&local_rand_state)) / float(max_y);
+		r = (*cam)->get_ray(u, v, &local_rand_state);
+		col += color(r, world, &local_rand_state);
+
+		u = float(i + curand_uniform(&local_rand_state)) / float(max_x);
+		v = float(j + offset + curand_uniform(&local_rand_state)) / float(max_y);
+		r = (*cam)->get_ray(u, v, &local_rand_state);
+		col += color(r, world, &local_rand_state);
+
+		u = float(i + curand_uniform(&local_rand_state)) / float(max_x);
+		v = float(j + offset + curand_uniform(&local_rand_state)) / float(max_y);
+		r = (*cam)->get_ray(u, v, &local_rand_state);
+		col += color(r, world, &local_rand_state);
+
+		u = float(i + curand_uniform(&local_rand_state)) / float(max_x);
+		v = float(j + offset + curand_uniform(&local_rand_state)) / float(max_y);
+		r = (*cam)->get_ray(u, v, &local_rand_state);
+		col += color(r, world, &local_rand_state);
+
+		u = float(i + curand_uniform(&local_rand_state)) / float(max_x);
+		v = float(j + offset + curand_uniform(&local_rand_state)) / float(max_y);
+		r = (*cam)->get_ray(u, v, &local_rand_state);
+		col += color(r, world, &local_rand_state);
+
+		u = float(i + curand_uniform(&local_rand_state)) / float(max_x);
+		v = float(j + offset + curand_uniform(&local_rand_state)) / float(max_y);
+		r = (*cam)->get_ray(u, v, &local_rand_state);
 		col += color(r, world, &local_rand_state);
 	}
 	rand_state[pixel_index] = local_rand_state;
