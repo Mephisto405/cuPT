@@ -12,7 +12,7 @@
 #include "device_launch_parameters.h"
 #include <vector>
 #include <cuda_profiler_api.h>
-#include <D:/EE817/cuPT/stb_image_write.h>
+#include <D:/EE817_gpu programming/playground/stb/stb_image_write.h>
 
 using namespace std;
 
@@ -212,8 +212,6 @@ int main() {
 	checkCudaErrors(cudaHostAlloc((void **)&h_buffer, fb_size, cudaHostAllocDefault));
 	checkCudaErrors(cudaMalloc((void **)&d_buffer, fb_size));
 	memset(h_buffer, 0, fb_size);
-	//vec3 *fb;
-	//checkCudaErrors(cudaMallocManaged((void **)&fb, fb_size));
 
 	// allocate random state
 	curandState *d_rand_state;
@@ -253,14 +251,12 @@ int main() {
 	cudaEvent_t start, stop;
 	checkCudaErrors(cudaEventCreate(&start));
 	checkCudaErrors(cudaEventCreate(&stop));
-
 	checkCudaErrors(cudaEventRecord(start, 0));
 
 	for (int i = 0; i < NSTREAM; i++)
 	{
 		int iOffset = i * iElem;
 		render_init << <grid, block, 0, streams[i] >> >(nx, ny, iOffset, &d_rand_state[iOffset * nx]);
-		//checkCudaErrors(cudaMemcpyAsync(&d_buffer[iOffset * nx], &h_buffer[iOffset * nx], min(iElem, ny - iOffset) * nx * sizeof(vec3), cudaMemcpyHostToDevice, streams[i]));
 		render << <grid, block, 0, streams[i] >> >(&d_buffer[iOffset * nx], nx, ny, iOffset, ns, d_camera, d_world, &d_rand_state[iOffset * nx]);
 		checkCudaErrors(cudaMemcpyAsync(&h_buffer[iOffset * nx], &d_buffer[iOffset * nx], min(iElem, ny - iOffset) * nx * sizeof(vec3), cudaMemcpyDeviceToHost, streams[i]));
 	}
@@ -303,7 +299,6 @@ int main() {
 	{
 		throw std::string("Failed to write image: ") + filename;
 	}
-
 
 	// clean up
 	checkCudaErrors(cudaDeviceSynchronize());
